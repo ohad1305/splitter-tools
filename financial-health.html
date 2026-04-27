@@ -591,6 +591,9 @@ select option{background:var(--g2)}
     <!-- LEGAL DISCLAIMER -->
     <div style="text-align:center;padding:20px 16px 8px;direction:rtl;border-top:1px solid rgba(46,204,143,0.12);margin-top:4px;">
       <div style="font-family:'Rubik',sans-serif;font-size:13px;font-weight:600;color:rgba(122,170,138,0.7);letter-spacing:1px;margin-bottom:10px;">SPLITTER — בית פיננסים &nbsp;|&nbsp; © כל הזכויות שמורות</div>
+      <div style="font-family:'Rubik',sans-serif;font-size:12px;font-weight:600;color:rgba(122,170,138,0.7);max-width:600px;margin:0 auto 10px;line-height:1.8;">
+        לשאלות או להכוונה אישית לשיפור המצב הפיננסי ניתן ליצור קשר: 0505666585 | ohad@splitter.co.il
+      </div>
       <div style="font-family:'Rubik',sans-serif;font-size:11px;font-weight:400;color:rgba(122,170,138,0.55);max-width:600px;margin:0 auto;line-height:1.8;">
         המידע והתוצאות המוצגים במחשבון זה הינם לצרכי הערכה כללית בלבד ואין לראות בהם ייעוץ פיננסי, השקעות, מס או כל ייעוץ מקצועי אחר. השימוש במחשבון אינו יוצר יחסי יועץ-לקוח. SPLITTER אינה אחראית לכל החלטה פיננסית שתתקבל בהסתמך על המידע המוצג. מומלץ להתייעץ עם יועץ פיננסי מוסמך טרם קבלת החלטות השקעה.
       </div>
@@ -673,8 +676,7 @@ function scoreEquity(cash, market, pension, realestate, otherasset, debt, expens
     penaltyPct = maxCat / gross;
     if (penaltyPct > 0.8) {
       concentrationPenalty = Math.round((penaltyPct - 0.8) * 100 / 2);
-      notes.push(`חוסר פיזור: ${Math.round(penaltyPct * 100)}% באפיק השקעה אחד (-${concentrationPenalty})`);
-    }
+      notes.push(`חוסר פיזור: ${Math.round(penaltyPct * 100)}% בסוג השקעה אחד (${concentrationPenalty}-)`);    }
   }
 
   // 3. Cash/deposits penalty: >30% of gross, each 7% bracket = -2pts
@@ -683,13 +685,13 @@ function scoreEquity(cash, market, pension, realestate, otherasset, debt, expens
     const cashPct = cash / gross;
     if (cashPct > 0.30) {
       cashPenalty = Math.ceil((cashPct - 0.30) / 0.07) * 2;
-      notes.push(`עו"ש/פיקדונות גבוה: ${Math.round(cashPct * 100)}% (-${cashPenalty})`);
+      notes.push(`ריכוז הון גבוה בעו"ש/פיקדונות: ${Math.round(cashPct * 100)}% (${cashPenalty}-)`);
     }
   }
 
   // 4. Age factor (-12 to +12)
   let ageFactor = 0;
-  if (avgAge > 0) { ageFactor = getAgeFactor(netWorth, avgAge); if (ageFactor !== 0) notes.push(`פקטור גיל: ${ageFactor > 0 ? '+' : ''}${ageFactor}`); }
+  if (avgAge > 0) { ageFactor = getAgeFactor(netWorth, avgAge); if (ageFactor !== 0) notes.push(`פקטור גיל: ${ageFactor > 0 ? `${ageFactor}+` : `${Math.abs(ageFactor)}-`}`); }
 
   const score = Math.max(0, Math.min(100, baseScore - concentrationPenalty - cashPenalty + ageFactor));
   return { score, penalty: concentrationPenalty + cashPenalty, penaltyPct, penaltyDetails: notes, concentrationPenalty, cashPenalty, ageFactor };
@@ -890,6 +892,9 @@ function showResults(d) {
     const penaltyNote = (idx === 0 && d.equityPenaltyDetails && d.equityPenaltyDetails.length > 0)
       ? d.equityPenaltyDetails.map(n => `<div style="font-size:11px;color:var(--orange);margin-top:4px;width:100%">⚠ ${n}</div>`).join('')
       : '';
+    const equityTargetNote = (idx === 0 && d.expenses > 0)
+      ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 הציון מתחשב בעיקר במרחק מהיעד האישי לחופש כלכלי (${(d.expenses * 400).toLocaleString('he-IL')} ₪)</div><div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 החסכונות הפנסיוניים מחושבים ב-80% מערכם בשל מגבלות שליטה ונזילות</div>`
+      : '';
     return `
     <div class="param-row" style="flex-wrap:wrap">
       <div class="param-name">${p.name}</div>
@@ -902,6 +907,7 @@ function showResults(d) {
       </div>
       <div class="param-score" style="color:${c}">${p.score}</div>
       ${penaltyNote}
+      ${equityTargetNote}
     </div>`;
   }).join('');
 

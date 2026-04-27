@@ -529,6 +529,7 @@ select option{background:var(--g2)}
       <div class="toggle-group" id="emp_type">
         <button class="toggle-btn active" data-val="private" onclick="selectBtn('emp_type',this)">שכיר פרטי</button>
         <button class="toggle-btn" data-val="public" onclick="selectBtn('emp_type',this)">שכיר ציבורי</button>
+        <button class="toggle-btn" data-val="pension_income" onclick="selectBtn('emp_type',this)">פנסיה</button>
         <button class="toggle-btn" data-val="self" onclick="selectBtn('emp_type',this)">עצמאי</button>
         <button class="toggle-btn" data-val="none" onclick="selectBtn('emp_type',this)">ללא עבודה</button>
       </div>
@@ -623,7 +624,8 @@ function selectBtn(groupId, btn) {
   document.querySelectorAll('#' + groupId + ' .toggle-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   if (groupId === 'emp_type') {
-    document.getElementById('stability_field').style.display = btn.dataset.val === 'none' ? 'none' : 'block';
+    const hideStability = btn.dataset.val === 'none' || btn.dataset.val === 'pension_income';
+    document.getElementById('stability_field').style.display = hideStability ? 'none' : 'block';
   }
 }
 
@@ -650,26 +652,68 @@ function calcNetWorth(cash, market, pension, realestate, otherasset, debt) {
   return cash + market + (pension * 0.8) + realestate + otherasset - debt;
 }
 
-// Concentration penalty deducted from TOTAL score
-// Uses gross assets as denominator (more intuitive - debt doesn't affect concentration)
-// Returns {score, penalty, penaltyPct} - penalty baked into equity score
-function scoreEquity(cash, market, pension, realestate, otherasset, debt) {
+// NEW EQUITY SCORING SYSTEM
+function scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge) {
   const gross = cash + market + (pension * 0.8) + realestate + otherasset;
   const netWorth = gross - debt;
-  let points = Math.ceil(netWorth / 72000);
-  points = Math.max(0, Math.min(100, points));
-  let penalty = 0, penaltyPct = 0;
+  if (netWorth <= 0) return { score: 0, penalty: 0, penaltyPct: 0, penaltyDetails: [], concentrationPenalty: 0, cashPenalty: 0, ageFactor: 0 };
+
+  // 1. Base score: expenses*400 target
+  const target = expenses * 400;
+  let baseScore;
+  if (target <= 0) { baseScore = 100; }
+  else if (netWorth >= target) { baseScore = 100; }
+  else { baseScore = Math.max(0, Math.ceil(100 - (1 - netWorth / target) * 100)); }
+
+  // 2. Concentration penalty (market, realestate, otherasset — NOT cash)
+  let concentrationPenalty = 0, penaltyPct = 0;
+  const notes = [];
   if (gross > 0) {
-    const cats = [cash, market, realestate, otherasset];
-    const maxCat = Math.max(...cats);
+    const maxCat = Math.max(market, realestate, otherasset);
     penaltyPct = maxCat / gross;
-    if (penaltyPct > 0.8) penalty = Math.round(Math.round((penaltyPct - 0.8) * 100) / 2);
+    if (penaltyPct > 0.8) {
+      concentrationPenalty = Math.round((penaltyPct - 0.8) * 100 / 2);
+      notes.push(`חוסר פיזור: ${Math.round(penaltyPct * 100)}% באפיק השקעה אחד (-${concentrationPenalty})`);
+    }
   }
-  return { score: Math.max(0, points - penalty), penalty, penaltyPct };
+
+  // 3. Cash/deposits penalty: >30% of gross, each 7% bracket = -2pts
+  let cashPenalty = 0;
+  if (gross > 0) {
+    const cashPct = cash / gross;
+    if (cashPct > 0.30) {
+      cashPenalty = Math.ceil((cashPct - 0.30) / 0.07) * 2;
+      notes.push(`עו"ש/פיקדונות גבוה: ${Math.round(cashPct * 100)}% (-${cashPenalty})`);
+    }
+  }
+
+  // 4. Age factor (-12 to +12)
+  let ageFactor = 0;
+  if (avgAge > 0) { ageFactor = getAgeFactor(netWorth, avgAge); if (ageFactor !== 0) notes.push(`פקטור גיל: ${ageFactor > 0 ? '+' : ''}${ageFactor}`); }
+
+  const score = Math.max(0, Math.min(100, baseScore - concentrationPenalty - cashPenalty + ageFactor));
+  return { score, penalty: concentrationPenalty + cashPenalty, penaltyPct, penaltyDetails: notes, concentrationPenalty, cashPenalty, ageFactor };
+}
+
+function getAgeFactor(netWorth, age) {
+  let thresholds;
+  if (age < 30)      thresholds = [10000, 50000, 150000, 300000];
+  else if (age < 40) thresholds = [200000, 500000, 1000000, 2000000];
+  else if (age < 50) thresholds = [500000, 1000000, 2500000, 4000000];
+  else if (age < 60) thresholds = [1000000, 2000000, 4000000, 6000000];
+  else               thresholds = [1500000, 3000000, 5000000, 8000000];
+
+  const [vl, l, ok, h] = thresholds;
+  if (netWorth <= 0) return -12;
+  if (netWorth < vl)  return -12 + Math.min(4, Math.floor(netWorth / (vl / 5)));
+  if (netWorth < l)   return  -7 + Math.min(4, Math.floor((netWorth - vl) / ((l - vl) / 5)));
+  if (netWorth < ok)  return  -2 + Math.min(4, Math.floor((netWorth - l) / ((ok - l) / 5)));
+  if (netWorth < h)   return   3 + Math.min(4, Math.floor((netWorth - ok) / ((h - ok) / 5)));
+  return 8 + Math.min(4, Math.floor((netWorth - h) / (h * 0.10)));
 }
 
 function concentrationPenalty(cash, market, pension, realestate, otherasset, debt) {
-  return scoreEquity(cash, market, pension, realestate, otherasset, debt).penalty;
+  return scoreEquity(cash, market, pension, realestate, otherasset, debt, 0, 0).penalty;
 }
 
 // Cash flow score
@@ -709,6 +753,7 @@ function scoreCushion(netWorth, expenses) {
 // Employment stability
 function scoreEmployment(type, stability) {
   if (type === 'none') return 0;
+  if (type === 'pension_income') return 100;
   const map = {
     public: { high: 100, medium: 75, low: 50 },
     private: { high: 100, medium: 70, low: 40 },
@@ -744,15 +789,16 @@ function calculate() {
   const realestate = hasRE ? getVal('realestate') : 0;
   const otherasset = hasOther ? getVal('otherasset') : 0;
   const empType = getActive('emp_type') || 'private';
-  const empStability = empType === 'none' ? 'none' : (getActive('emp_stability') || 'medium');
+  const empStability = (empType === 'none' || empType === 'pension_income') ? 'none' : (getActive('emp_stability') || 'medium');
   const ageM = getVal('age_m');
   const ageF = getVal('age_f');
+  const avgAge = (ageM && ageF) ? Math.round((ageM + ageF) / 2) : (ageM || ageF || 0);
 
   // Calculate scores
   const netWorth = calcNetWorth(cash, market, pension, realestate, otherasset, debt);
   const grossAssets = cash + market + (pension * 0.8) + realestate + otherasset;
 
-  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt);
+  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge);
   const s_equity = equityResult.score;
   const s_cashflow = scoreCashflow(income, expenses);
   const s_cushion = scoreCushion(netWorth, expenses);
@@ -771,8 +817,10 @@ function calculate() {
   showResults({
     totalScore, s_equity, s_cashflow, s_cushion, s_employment, s_debt,
     income, expenses, cash, market, pension, debt, realestate, otherasset,
-    netWorth, grossAssets, empType, empStability, ageM, ageF, children: getVal('children'),
-    equityPenalty: equityResult.penalty, equityPenaltyPct: equityResult.penaltyPct
+    netWorth, grossAssets, empType, empStability, ageM, ageF, avgAge, children: getVal('children'),
+    equityPenalty: equityResult.penalty, equityPenaltyPct: equityResult.penaltyPct,
+    equityPenaltyDetails: equityResult.penaltyDetails,
+    equityConcentrationPenalty: equityResult.concentrationPenalty
   });
 }
 
@@ -839,8 +887,8 @@ function showResults(d) {
 
   document.getElementById('param-breakdown').innerHTML = params.map((p, idx) => {
     const c = getScoreColor(p.score);
-    const penaltyNote = (idx === 0 && d.equityPenalty > 0)
-      ? `<div style="font-size:11px;color:var(--orange);margin-top:5px;width:100%">⚠ הופחתו ${d.equityPenalty} נקודות עקב חוסר פיזור (${Math.round(d.equityPenaltyPct * 100)}% בקטגוריה אחת)</div>`
+    const penaltyNote = (idx === 0 && d.equityPenaltyDetails && d.equityPenaltyDetails.length > 0)
+      ? d.equityPenaltyDetails.map(n => `<div style="font-size:11px;color:var(--orange);margin-top:4px;width:100%">⚠ ${n}</div>`).join('')
       : '';
     return `
     <div class="param-row" style="flex-wrap:wrap">
@@ -869,7 +917,7 @@ function showResults(d) {
   const months = d.expenses > 0 ? (d.netWorth / d.expenses).toFixed(1) : '—';
   const debtRatio = d.income > 0 && d.debt > 0 ? (d.debt / (d.income * 12)).toFixed(2) : '—';
 
-  const avgAge = (d.ageM && d.ageF) ? Math.round((d.ageM + d.ageF) / 2) : (d.ageM || d.ageF || 0);
+  const avgAge = d.avgAge || 0;
   const wealthLabel = getWealthLabel(d.netWorth, avgAge);
 
   document.getElementById('stats-grid').innerHTML = `
@@ -956,7 +1004,7 @@ function showResults(d) {
     tips.push({
       icon: '📊',
       title: 'הגדלת חשיפה למניות',
-      text: `הגדלת החשיפה למניות בהשקעות ובחסכונות הפנסיוניים, צפויה להוביל להגדלת פוטנציאל התשואה השנתי הממוצע ועפ"י ההיסטוריה הוא יכול לגדול לכ-10%. הונכם הנוכחי המושקע בשוק ההון (כולל החסכונות הפנסיוניים) (${fmtFull(investBase)}) צפוי לגדול לכ-<strong>${fmtFull(future5)}</strong> בעוד 5 שנים וזאת ללא הפקדות נוספות.`
+      text: `העלאת אחוז המניות בהשקעות בשוק ההון ובחסכונות הפנסיוניים צפויה להוביל להגדלת פוטנציאל התשואה השנתי הממוצע ועפ"י ההיסטוריה הוא יכול לגדול לכ-10%. הונכם הנוכחי המושקע בשוק ההון (כולל החסכונות הפנסיוניים) (${fmtFull(investBase)}) צפוי לגדול לכ-<strong>${fmtFull(future5)}</strong> בעוד 5 שנים וזאת ללא הפקדות נוספות.`
     });
   }
 
@@ -1016,7 +1064,7 @@ function showResults(d) {
   }
 
   // Diversification tip: if >80% of gross assets in one category
-  if (d.equityPenalty > 0) {
+  if (d.equityConcentrationPenalty > 0) {
     const gross = d.cash + d.market + (d.pension * 0.8) + d.realestate + d.otherasset;
     const cats = [
       { name: 'עו"ש ופיקדונות', val: d.cash },
@@ -1035,7 +1083,7 @@ function showResults(d) {
   document.getElementById('tips-container').innerHTML = tips.map(t => `
     <div class="tip-box">
       <div class="tip-ico">${t.icon}</div>
-      <div class="tip-txt"><strong>${t.title}:</strong> ${t.text}</div>
+      <div class="tip-txt">${t.title ? `<strong>${t.title}:</strong> ` : ''}${t.text}</div>
     </div>
   `).join('') || '<div class="tip-box"><div class="tip-ico">🏆</div><div class="tip-txt"><strong>כל הכבוד!</strong> מצבכם הפיננסי מצוין. המשיכו כך.</div></div>';
 }
@@ -1043,35 +1091,35 @@ function showResults(d) {
 function getWealthLabel(netWorth, age) {
   let cls, text;
   if (age < 30) {
-    if (netWorth > 500000) { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 300000) { cls = 'wealth-good'; text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 150000) { cls = 'wealth-ok'; text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 50000) { cls = 'wealth-low'; text = 'לא מספיק טוב ביחס לגיל'; }
-    else { cls = 'wealth-bad'; text = 'נמוך מאד ביחס לגיל'; }
+    if (netWorth >= 300000)      { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+    else if (netWorth >= 150000) { cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+    else if (netWorth >= 50000)  { cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+    else if (netWorth >= 10000)  { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   } else if (age < 40) {
-    if (netWorth > 2000000) { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 1000000) { cls = 'wealth-good'; text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 500000) { cls = 'wealth-ok'; text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 200000) { cls = 'wealth-low'; text = 'לא מספיק טוב ביחס לגיל'; }
-    else { cls = 'wealth-bad'; text = 'נמוך מאד ביחס לגיל'; }
+    if (netWorth >= 2000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+    else if (netWorth >= 1000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+    else if (netWorth >= 500000) { cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+    else if (netWorth >= 200000) { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   } else if (age < 50) {
-    if (netWorth > 4000000) { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 2500000) { cls = 'wealth-good'; text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 1000000) { cls = 'wealth-ok'; text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 500000) { cls = 'wealth-low'; text = 'לא מספיק טוב ביחס לגיל'; }
-    else { cls = 'wealth-bad'; text = 'נמוך מאד ביחס לגיל'; }
+    if (netWorth >= 4000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+    else if (netWorth >= 2500000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+    else if (netWorth >= 1000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+    else if (netWorth >= 500000) { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   } else if (age < 60) {
-    if (netWorth > 6000000) { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 4000000) { cls = 'wealth-good'; text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 2000000) { cls = 'wealth-ok'; text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 1000000) { cls = 'wealth-low'; text = 'לא מספיק טוב ביחס לגיל'; }
-    else { cls = 'wealth-bad'; text = 'נמוך מאד ביחס לגיל'; }
+    if (netWorth >= 6000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+    else if (netWorth >= 4000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+    else if (netWorth >= 2000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+    else if (netWorth >= 1000000){ cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   } else {
-    if (netWorth > 6000000) { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 4000000) { cls = 'wealth-good'; text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 2000000) { cls = 'wealth-ok'; text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 1000000) { cls = 'wealth-low'; text = 'לא מספיק טוב ביחס לגיל'; }
-    else { cls = 'wealth-bad'; text = 'נמוך מאד ביחס לגיל'; }
+    if (netWorth >= 8000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+    else if (netWorth >= 5000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+    else if (netWorth >= 3000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+    else if (netWorth >= 1500000){ cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   }
   return `<span class="wealth-badge ${cls}">${text}</span>`;
 }

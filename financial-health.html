@@ -442,11 +442,11 @@ select option{background:var(--g2)}
     <div class="g2" style="margin-bottom:14px">
       <div class="field">
         <label>גיל גבר <span class="hint">(שנים)</span></label>
-        <input type="number" id="age_m" placeholder="35" min="18" max="80">
+        <input type="number" id="age_m" placeholder="35" min="18" max="80" oninput="updateSpouseSection()">
       </div>
       <div class="field">
         <label>גיל אישה <span class="hint">(שנים)</span></label>
-        <input type="number" id="age_f" placeholder="33" min="18" max="80">
+        <input type="number" id="age_f" placeholder="33" min="18" max="80" oninput="updateSpouseSection()">
       </div>
     </div>
     <div class="field">
@@ -542,6 +542,35 @@ select option{background:var(--g2)}
         <button class="toggle-btn" data-val="high" onclick="selectBtn('emp_stability',this)">גבוהה</button>
       </div>
     </div>
+    <div class="field" id="pension_amount_field" style="display:none">
+      <label>גובה קצבה חודשית (₪)</label>
+      <input type="number" id="pension_amount" placeholder="0" min="0">
+    </div>
+    <!-- SPOUSE EMPLOYMENT - shown only when both ages filled -->
+    <div id="spouse_emp_section" style="display:none;margin-top:20px;padding-top:16px;border-top:1px solid rgba(46,204,143,0.15)">
+      <div class="field" style="margin-bottom:16px">
+        <label>מצב תעסוקתי בן/בת זוג</label>
+        <div class="toggle-group" id="emp_type_spouse">
+          <button class="toggle-btn active" data-val="private" onclick="selectBtn('emp_type_spouse',this)">שכיר פרטי</button>
+          <button class="toggle-btn" data-val="public" onclick="selectBtn('emp_type_spouse',this)">שכיר ציבורי</button>
+          <button class="toggle-btn" data-val="pension_income" onclick="selectBtn('emp_type_spouse',this)">פנסיה</button>
+          <button class="toggle-btn" data-val="self" onclick="selectBtn('emp_type_spouse',this)">עצמאי</button>
+          <button class="toggle-btn" data-val="none" onclick="selectBtn('emp_type_spouse',this)">ללא עבודה</button>
+        </div>
+      </div>
+      <div class="field" id="stability_field_spouse">
+        <label>יציבות תעסוקתית בן/בת זוג</label>
+        <div class="toggle-group" id="emp_stability_spouse">
+          <button class="toggle-btn" data-val="low" onclick="selectBtn('emp_stability_spouse',this)">נמוכה</button>
+          <button class="toggle-btn active" data-val="medium" onclick="selectBtn('emp_stability_spouse',this)">בינונית</button>
+          <button class="toggle-btn" data-val="high" onclick="selectBtn('emp_stability_spouse',this)">גבוהה</button>
+        </div>
+      </div>
+      <div class="field" id="pension_amount_spouse_field" style="display:none">
+        <label>גובה קצבה חודשית בן/בת זוג (₪)</label>
+        <input type="number" id="pension_amount_spouse" placeholder="0" min="0">
+      </div>
+    </div>
   </div>
 
   <button class="cta" onclick="calculate()">✦ חשב את הציון שלי</button>
@@ -627,9 +656,23 @@ function selectBtn(groupId, btn) {
   document.querySelectorAll('#' + groupId + ' .toggle-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   if (groupId === 'emp_type') {
-    const hideStability = btn.dataset.val === 'none' || btn.dataset.val === 'pension_income';
+    const isPension = btn.dataset.val === 'pension_income';
+    const hideStability = btn.dataset.val === 'none' || isPension;
     document.getElementById('stability_field').style.display = hideStability ? 'none' : 'block';
+    document.getElementById('pension_amount_field').style.display = isPension ? 'block' : 'none';
   }
+  if (groupId === 'emp_type_spouse') {
+    const isPension = btn.dataset.val === 'pension_income';
+    const hideStability = btn.dataset.val === 'none' || isPension;
+    document.getElementById('stability_field_spouse').style.display = hideStability ? 'none' : 'block';
+    document.getElementById('pension_amount_spouse_field').style.display = isPension ? 'block' : 'none';
+  }
+}
+
+function updateSpouseSection() {
+  const ageM = parseFloat(document.getElementById('age_m').value) || 0;
+  const ageF = parseFloat(document.getElementById('age_f').value) || 0;
+  document.getElementById('spouse_emp_section').style.display = (ageM > 0 && ageF > 0) ? 'block' : 'none';
 }
 
 function getVal(id) { return parseFloat(document.getElementById(id).value) || 0; }
@@ -656,8 +699,9 @@ function calcNetWorth(cash, market, pension, realestate, otherasset, debt) {
 }
 
 // NEW EQUITY SCORING SYSTEM
-function scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge) {
-  const gross = cash + market + (pension * 0.8) + realestate + otherasset;
+function scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital) {
+  pensionCapital = pensionCapital || 0;
+  const gross = cash + market + (pension * 0.8) + realestate + otherasset + pensionCapital;
   const netWorth = gross - debt;
   if (netWorth <= 0) return { score: 0, penalty: 0, penaltyPct: 0, penaltyDetails: [], concentrationPenalty: 0, cashPenalty: 0, ageFactor: 0 };
 
@@ -668,50 +712,105 @@ function scoreEquity(cash, market, pension, realestate, otherasset, debt, expens
   else if (netWorth >= target) { baseScore = 100; }
   else { baseScore = Math.max(0, Math.ceil(100 - (1 - netWorth / target) * 100)); }
 
-  // 2. Concentration penalty (market, realestate, otherasset — NOT cash)
-  let concentrationPenalty = 0, penaltyPct = 0;
   const notes = [];
+  const surplusPct = target > 0 ? Math.max(0, (netWorth - target) / target) : 0; // % above target
+
+  // 2. Concentration penalty (market, realestate, otherasset — NOT cash)
+  // >80% in one type: -1pt per 4%, max 5pts. Refund: 1pt per 1% above target, up to full refund.
+  let concentrationPenalty = 0, penaltyPct = 0;
   if (gross > 0) {
     const maxCat = Math.max(market, realestate, otherasset);
     penaltyPct = maxCat / gross;
     if (penaltyPct > 0.8) {
-      concentrationPenalty = Math.round((penaltyPct - 0.8) * 100 / 2);
-      notes.push(`חוסר פיזור: ${Math.round(penaltyPct * 100)}% בסוג השקעה אחד (${concentrationPenalty}-)`);    }
+      const rawPenalty = Math.floor((penaltyPct - 0.8) * 100 / 4);
+      const maxConc = 5;
+      const fullPenalty = Math.min(rawPenalty, maxConc);
+      const refund = Math.min(fullPenalty, Math.floor(surplusPct * 100));
+      concentrationPenalty = fullPenalty - refund;
+      if (fullPenalty > 0) notes.push(`חוסר פיזור: ${Math.round(penaltyPct * 100)}% בסוג השקעה אחד (${concentrationPenalty}-)`);
+    }
   }
 
-  // 3. Cash/deposits penalty: >30% of gross, each 7% bracket = -2pts
+  // 3. Cash/deposits penalty: >20% of gross, each 4% = -1pt, max 20pts. Refund: 1pt per 1% above target.
   let cashPenalty = 0;
   if (gross > 0) {
     const cashPct = cash / gross;
-    if (cashPct > 0.30) {
-      cashPenalty = Math.ceil((cashPct - 0.30) / 0.07) * 2;
-      notes.push(`ריכוז הון גבוה בעו"ש/פיקדונות: ${Math.round(cashPct * 100)}% (${cashPenalty}-)`);
+    if (cashPct > 0.20) {
+      const rawPenalty = Math.floor((cashPct - 0.20) * 100 / 4);
+      const fullPenalty = Math.min(rawPenalty, 20);
+      const refund = Math.min(fullPenalty, Math.floor(surplusPct * 100));
+      cashPenalty = fullPenalty - refund;
+      if (fullPenalty > 0) notes.push(`ריכוז הון גבוה בעו"ש/פיקדונות: ${Math.round(cashPct * 100)}% (${cashPenalty}-)`);
     }
   }
 
   // 4. Age factor (-12 to +12)
   let ageFactor = 0;
-  if (avgAge > 0) { ageFactor = getAgeFactor(netWorth, avgAge); if (ageFactor !== 0) notes.push(`פקטור גיל: ${ageFactor > 0 ? `${ageFactor}+` : `${Math.abs(ageFactor)}-`}`); }
+  if (avgAge > 0) {
+    ageFactor = getAgeFactor(netWorth, avgAge);
+    if (ageFactor !== 0) notes.push(`פקטור גיל: ${ageFactor > 0 ? `${ageFactor}+` : `${Math.abs(ageFactor)}-`}`);
+  }
 
   const score = Math.max(0, Math.min(100, baseScore - concentrationPenalty - cashPenalty + ageFactor));
   return { score, penalty: concentrationPenalty + cashPenalty, penaltyPct, penaltyDetails: notes, concentrationPenalty, cashPenalty, ageFactor };
 }
 
 function getAgeFactor(netWorth, age) {
-  let thresholds;
-  if (age < 30)      thresholds = [10000, 50000, 150000, 300000];
-  else if (age < 40) thresholds = [200000, 500000, 1000000, 2000000];
-  else if (age < 50) thresholds = [500000, 1000000, 2500000, 4000000];
-  else if (age < 60) thresholds = [1000000, 2000000, 4000000, 6000000];
-  else               thresholds = [1500000, 3000000, 5000000, 8000000];
+  const anchors = [
+    [18, 10000,   25000,   50000,   80000],
+    [19, 12000,   28000,   55000,   88000],
+    [20, 14000,   32000,   62000,   96000],
+    [21, 16000,   36000,   70000,   105000],
+    [22, 20000,   45000,   85000,   125000],
+    [23, 25000,   55000,   100000,  148000],
+    [24, 30000,   65000,   120000,  155000],
+    [25, 35000,   75000,   140000,  175000],
+    [30, 80000,   160000,  300000,  450000],
+    [35, 200000,  400000,  700000,  1000000],
+    [40, 350000,  700000,  1200000, 1700000],
+    [45, 600000,  1200000, 2000000, 2800000],
+    [50, 1000000, 2000000, 3200000, 4400000],
+    [55, 1600000, 3200000, 5000000, 6800000],
+    [60, 2200000, 4400000, 7000000, 9500000],
+    [61, 2320000, 4640000, 7400000, 9950000],
+    [62, 2440000, 4880000, 7800000, 10400000],
+    [63, 2560000, 5120000, 8200000, 10850000],
+    [64, 2680000, 5360000, 8600000, 11300000],
+    [65, 2800000, 5600000, 9000000, 11750000],
+    [66, 2920000, 5840000, 9400000, 12200000],
+    [67, 3040000, 6080000, 9800000, 12650000],
+    [68, 3160000, 6320000, 10200000, 13100000],
+  ];
 
-  const [vl, l, ok, h] = thresholds;
-  if (netWorth <= 0) return -12;
-  if (netWorth < vl)  return -12 + Math.min(4, Math.floor(netWorth / (vl / 5)));
-  if (netWorth < l)   return  -7 + Math.min(4, Math.floor((netWorth - vl) / ((l - vl) / 5)));
-  if (netWorth < ok)  return  -2 + Math.min(4, Math.floor((netWorth - l) / ((ok - l) / 5)));
-  if (netWorth < h)   return   3 + Math.min(4, Math.floor((netWorth - ok) / ((h - ok) / 5)));
-  return 8 + Math.min(4, Math.floor((netWorth - h) / (h * 0.10)));
+  function getThresholds(a) {
+    for (let i = 0; i < anchors.length; i++) {
+      if (anchors[i][0] === a) return anchors[i].slice(1);
+    }
+    if (a > 68) return anchors[anchors.length-1].slice(1);
+    for (let i = 0; i < anchors.length - 1; i++) {
+      const [a1, ...v1] = anchors[i];
+      const [a2, ...v2] = anchors[i+1];
+      if (a > a1 && a < a2) {
+        const t = (a - a1) / (a2 - a1);
+        return v1.map((v, j) => Math.round(v + (v2[j] - v) * t));
+      }
+    }
+    return anchors[anchors.length-1].slice(1);
+  }
+
+  const [vl, l, ok, h] = getThresholds(age);
+  const veryLow  = [-12, -11, -10, -9, -8];
+  const low      = [-7,  -6,  -5,  -4, -3];
+  const ok_scores= [-2,  -1,   0,  +2, +4];
+  const high     = [+6,  +8,  +10, +12, +14];
+  const veryHigh = [+16, +18, +20, +22, +24];
+
+  if (netWorth <= 0) return veryLow[0];
+  if (netWorth < vl)  return veryLow[Math.min(4, Math.floor(netWorth / (vl / 5)))];
+  if (netWorth < l)   return low[Math.min(4, Math.floor((netWorth - vl) / ((l - vl) / 5)))];
+  if (netWorth < ok)  return ok_scores[Math.min(4, Math.floor((netWorth - l) / ((ok - l) / 5)))];
+  if (netWorth < h)   return high[Math.min(4, Math.floor((netWorth - ok) / ((h - ok) / 5)))];
+  return veryHigh[Math.min(4, Math.floor((netWorth - h) / (h * 0.10)))];
 }
 
 function concentrationPenalty(cash, market, pension, realestate, otherasset, debt) {
@@ -795,16 +894,28 @@ function calculate() {
   const ageM = getVal('age_m');
   const ageF = getVal('age_f');
   const avgAge = (ageM && ageF) ? Math.round((ageM + ageF) / 2) : (ageM || ageF || 0);
+  const hasSpouse = ageM > 0 && ageF > 0;
+
+  const empTypeSpouse = hasSpouse ? (getActive('emp_type_spouse') || 'private') : null;
+  const empStabilitySpouse = hasSpouse ? ((empTypeSpouse === 'none' || empTypeSpouse === 'pension_income') ? 'none' : (getActive('emp_stability_spouse') || 'medium')) : null;
+
+  // Pension income capitalization (pension * 200, 100% — no discount)
+  const pensionAmount = empType === 'pension_income' ? (getVal('pension_amount') || 0) : 0;
+  const pensionAmountSpouse = (hasSpouse && empTypeSpouse === 'pension_income') ? (getVal('pension_amount_spouse') || 0) : 0;
+  const pensionCapital = (pensionAmount + pensionAmountSpouse) * 200;
 
   // Calculate scores
-  const netWorth = calcNetWorth(cash, market, pension, realestate, otherasset, debt);
-  const grossAssets = cash + market + (pension * 0.8) + realestate + otherasset;
+  const netWorth = calcNetWorth(cash, market, pension, realestate, otherasset, debt) + pensionCapital;
+  const grossAssets = cash + market + (pension * 0.8) + realestate + otherasset + pensionCapital;
 
-  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge);
+  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital);
   const s_equity = equityResult.score;
   const s_cashflow = scoreCashflow(income, expenses);
   const s_cushion = scoreCushion(netWorth, expenses);
-  const s_employment = scoreEmployment(empType, empStability);
+  const s_employment_self = scoreEmployment(empType, empStability);
+  const s_employment = hasSpouse
+    ? Math.round((s_employment_self + scoreEmployment(empTypeSpouse, empStabilitySpouse)) / 2)
+    : s_employment_self;
   const s_debt = scoreDebtRatio(debt, income);
 
   const totalScore = Math.ceil(
@@ -820,6 +931,7 @@ function calculate() {
     totalScore, s_equity, s_cashflow, s_cushion, s_employment, s_debt,
     income, expenses, cash, market, pension, debt, realestate, otherasset,
     netWorth, grossAssets, empType, empStability, ageM, ageF, avgAge, children: getVal('children'),
+    empTypeSpouse, empStabilitySpouse, hasSpouse, pensionCapital,
     equityPenalty: equityResult.penalty, equityPenaltyPct: equityResult.penaltyPct,
     equityPenaltyDetails: equityResult.penaltyDetails,
     equityConcentrationPenalty: equityResult.concentrationPenalty
@@ -893,7 +1005,7 @@ function showResults(d) {
       ? d.equityPenaltyDetails.map(n => `<div style="font-size:11px;color:var(--orange);margin-top:4px;width:100%">⚠ ${n}</div>`).join('')
       : '';
     const equityTargetNote = (idx === 0 && d.expenses > 0)
-      ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 הציון מתחשב בעיקר במרחק מהיעד האישי לחופש כלכלי (${(d.expenses * 400).toLocaleString('he-IL')} ₪)</div><div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 החסכונות הפנסיוניים מחושבים ב-80% מערכם בשל מגבלות שליטה ונזילות</div>`
+      ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 הציון מתחשב בעיקר במרחק מהיעד האישי לחופש כלכלי (${(d.expenses * 400).toLocaleString('he-IL')} ₪)</div>${d.pension > 0 ? `<div style="font-size:11px;color:var(--text-dim);margin-top:4px;width:100%">💡 החסכונות הפנסיוניים מחושבים ב-80% מערכם בשל מגבלות שליטה ונזילות</div>` : ''}`
       : '';
     return `
     <div class="param-row" style="flex-wrap:wrap">
@@ -938,7 +1050,7 @@ function showResults(d) {
         <div class="stat-val" style="color:${d.netWorth >= 0 ? 'var(--accent)' : 'var(--red)'};margin-bottom:0">${fmtFull(Math.round(d.netWorth))}</div>
         ${avgAge > 0 ? wealthLabel : ''}
       </div>
-      <div class="stat-sub">סך נכסים פחות חובות</div>
+      <div class="stat-sub">סך נכסים פחות חובות${d.pensionCapital > 0 ? ' · כולל שווי קצבת פנסיה' : ''}</div>
     </div>
     <div class="stat-box">
       <div class="stat-lbl">כרית ביטחון</div>
@@ -1038,7 +1150,9 @@ function showResults(d) {
   }
 
   // Employee -> self employment tip
-  if (d.empType === 'private' || d.empType === 'public') {
+  const eitherSalaried = d.empType === 'private' || d.empType === 'public' ||
+    (d.empTypeSpouse === 'private' || d.empTypeSpouse === 'public');
+  if (eitherSalaried) {
     tips.push({
       icon: '🏢',
       title: 'עוסק פטור/מורשה',
@@ -1095,38 +1209,55 @@ function showResults(d) {
 }
 
 function getWealthLabel(netWorth, age) {
-  let cls, text;
-  if (age < 30) {
-    if (netWorth >= 300000)      { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 150000) { cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 50000)  { cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 10000)  { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
-    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
-  } else if (age < 40) {
-    if (netWorth >= 2000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 1000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 500000) { cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 200000) { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
-    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
-  } else if (age < 50) {
-    if (netWorth >= 4000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 2500000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 1000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 500000) { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
-    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
-  } else if (age < 60) {
-    if (netWorth >= 6000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 4000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 2000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 1000000){ cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
-    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
-  } else {
-    if (netWorth >= 8000000)     { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
-    else if (netWorth >= 5000000){ cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
-    else if (netWorth >= 3000000){ cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
-    else if (netWorth >= 1500000){ cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
-    else                         { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
+  const anchors = [
+    [18, 10000,   25000,   50000,   80000],
+    [19, 12000,   28000,   55000,   88000],
+    [20, 14000,   32000,   62000,   96000],
+    [21, 16000,   36000,   70000,   105000],
+    [22, 20000,   45000,   85000,   125000],
+    [23, 25000,   55000,   100000,  148000],
+    [24, 30000,   65000,   120000,  155000],
+    [25, 35000,   75000,   140000,  175000],
+    [30, 80000,   160000,  300000,  450000],
+    [35, 200000,  400000,  700000,  1000000],
+    [40, 350000,  700000,  1200000, 1700000],
+    [45, 600000,  1200000, 2000000, 2800000],
+    [50, 1000000, 2000000, 3200000, 4400000],
+    [55, 1600000, 3200000, 5000000, 6800000],
+    [60, 2200000, 4400000, 7000000, 9500000],
+    [61, 2320000, 4640000, 7400000, 9950000],
+    [62, 2440000, 4880000, 7800000, 10400000],
+    [63, 2560000, 5120000, 8200000, 10850000],
+    [64, 2680000, 5360000, 8600000, 11300000],
+    [65, 2800000, 5600000, 9000000, 11750000],
+    [66, 2920000, 5840000, 9400000, 12200000],
+    [67, 3040000, 6080000, 9800000, 12650000],
+    [68, 3160000, 6320000, 10200000, 13100000],
+  ];
+
+  function getThresholds(a) {
+    for (let i = 0; i < anchors.length; i++) {
+      if (anchors[i][0] === a) return anchors[i].slice(1);
+    }
+    if (a > 68) return anchors[anchors.length-1].slice(1);
+    for (let i = 0; i < anchors.length - 1; i++) {
+      const [a1, ...v1] = anchors[i];
+      const [a2, ...v2] = anchors[i+1];
+      if (a > a1 && a < a2) {
+        const t = (a - a1) / (a2 - a1);
+        return v1.map((v, j) => Math.round(v + (v2[j] - v) * t));
+      }
+    }
+    return anchors[anchors.length-1].slice(1);
   }
+
+  const [vl, l, ok, h] = getThresholds(age);
+  let cls, text;
+  if (netWorth >= h)       { cls = 'wealth-great'; text = 'גבוה מאד ביחס לגיל'; }
+  else if (netWorth >= ok) { cls = 'wealth-good';  text = 'גבוה ביחס לגיל'; }
+  else if (netWorth >= l)  { cls = 'wealth-ok';    text = 'סביר ביחס לגיל'; }
+  else if (netWorth >= vl) { cls = 'wealth-low';   text = 'נמוך ביחס לגיל'; }
+  else                     { cls = 'wealth-bad';   text = 'נמוך מאד ביחס לגיל'; }
   return `<span class="wealth-badge ${cls}">${text}</span>`;
 }
 

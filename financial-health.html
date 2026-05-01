@@ -699,8 +699,9 @@ function calcNetWorth(cash, market, pension, realestate, otherasset, debt) {
 }
 
 // NEW EQUITY SCORING SYSTEM
-function scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital) {
+function scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital, income) {
   pensionCapital = pensionCapital || 0;
+  income = income || 0;
   const gross = cash + market + (pension * 0.8) + realestate + otherasset + pensionCapital;
   const netWorth = gross - debt;
   if (netWorth <= 0) return { score: 0, penalty: 0, penaltyPct: 0, penaltyDetails: [], concentrationPenalty: 0, cashPenalty: 0, ageFactor: 0 };
@@ -731,11 +732,12 @@ function scoreEquity(cash, market, pension, realestate, otherasset, debt, expens
     }
   }
 
-  // 3. Cash/deposits penalty: >20% of gross, each 4% = -1pt, max 20pts. Refund: 1pt per 1% above target.
+  // 3. Cash/deposits penalty: >20% of gross AND >2x monthly income, each 4% = -1pt, max 20pts. Refund: 1pt per 1% above target.
   let cashPenalty = 0;
   if (gross > 0) {
     const cashPct = cash / gross;
-    if (cashPct > 0.20) {
+    const incomeThreshold = income * 2;
+    if (cashPct > 0.20 && cash > incomeThreshold) {
       const rawPenalty = Math.floor((cashPct - 0.20) * 100 / 4);
       const fullPenalty = Math.min(rawPenalty, 20);
       const refund = Math.min(fullPenalty, Math.floor(surplusPct * 100));
@@ -896,6 +898,16 @@ function calculate() {
   const avgAge = (ageM && ageF) ? Math.round((ageM + ageF) / 2) : (ageM || ageF || 0);
   const hasSpouse = ageM > 0 && ageF > 0;
 
+  // Validation - required fields
+  const errFields = [];
+  if (!ageM && !ageF) errFields.push('גיל (לפחות של אדם אחד)');
+  if (!document.getElementById('income').value.trim()) errFields.push('הכנסה חודשית');
+  if (!expenses) errFields.push('הוצאות חודשיות');
+  if (errFields.length > 0) {
+    alert('שדות חובה חסרים:\n• ' + errFields.join('\n• ') + '\n\nיש למלא שדות אלו לפני החישוב.');
+    return;
+  }
+
   const empTypeSpouse = hasSpouse ? (getActive('emp_type_spouse') || 'private') : null;
   const empStabilitySpouse = hasSpouse ? ((empTypeSpouse === 'none' || empTypeSpouse === 'pension_income') ? 'none' : (getActive('emp_stability_spouse') || 'medium')) : null;
 
@@ -908,7 +920,7 @@ function calculate() {
   const netWorth = calcNetWorth(cash, market, pension, realestate, otherasset, debt) + pensionCapital;
   const grossAssets = cash + market + (pension * 0.8) + realestate + otherasset + pensionCapital;
 
-  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital);
+  const equityResult = scoreEquity(cash, market, pension, realestate, otherasset, debt, expenses, avgAge, pensionCapital, income);
   const s_equity = equityResult.score;
   const s_cashflow = scoreCashflow(income, expenses);
   const s_cushion = scoreCushion(netWorth, expenses);
@@ -1173,7 +1185,7 @@ function showResults(d) {
 
   // Cash tip: cash > 5% of liquid assets AND > 30,000
   const liquidAssets = d.cash + d.market + (d.pension * 0.8);
-  if (d.cash > liquidAssets * 0.05 && d.cash > 30000 && liquidAssets > 0) {
+  if (d.cash > liquidAssets * 0.05 && d.cash > d.income * 2 && liquidAssets > 0) {
     const halfCash = Math.round(d.cash / 2);
     const annualGain = Math.round(halfCash * 0.05);
     tips.push({
